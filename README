@@ -1,0 +1,9 @@
+# libgsm
+
+Library that opens up GSM serial port and provides an interface to send commands.
+
+Simply run:
+
+	make
+
+libgsm.a will be create which you can statically link with.
