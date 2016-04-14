@@ -1,2 +1,3 @@
 libgsm.a
 gsm
+*.o
