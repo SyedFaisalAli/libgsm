@@ -1,4 +1,15 @@
-    #include "gsm.h"
+#include "gsm.h"
+
+// Expect s1 to be malloc
+int xstrcmp(char *s1, const char *s2, int frees1)
+{
+  int ret = strcmp(s1, s2);
+
+  if (frees1)
+    free(s1);
+
+  return ret;
+}
 
 int septlen(int origsize)
 {
@@ -34,7 +45,6 @@ char * str2nhex(char *dest, char *src, int n)
   for (int i = 0; i < n; i++)
   {
     sprintf(ptr, "%02X", (uint8_t)src[i]);
-    // printf("Ptr: %s, Actual: %02X\n", ptr, (uint8_t)src[i]);
     ptr += 2;
   }
 
@@ -57,17 +67,11 @@ int pdu_npack(char *dest, const char *src, int udhpadding, int n)
   uint8_t octet;
   char *ptr;
   const char *srcptr;
-  // uint8_t cpy[paddedlen];
   mbits = 0; // # Of bites to shift
   rlen = 0; // # 7-bit length
 
   ptr = dest;
   srcptr = src;
-  // res = dest;
-
-  printf("Msg: %s\n", src);
-
-  // strcpy(cpy, src);
 
   if (udhpadding > 0)
   {
@@ -75,18 +79,9 @@ int pdu_npack(char *dest, const char *src, int udhpadding, int n)
     printf("Inital %02X, moving: %d\n", src[0], mbits);
     octet = *srcptr << (7 - mbits);
     *ptr++ = octet;
-    // sprintf(res, "%02X", octet);
-    // res += 2;
     mbits++;
     rlen++;
   }
-  // else
-  // {
-  //   strcpy(cpy, src);
-  // }
-
-  // printf("Len: %d, Str: %s\n", len, src);
-
 
   // Iterate through each byte
   for (i = 0; i < n; i++)
@@ -103,8 +98,6 @@ int pdu_npack(char *dest, const char *src, int udhpadding, int n)
       octet |= *(srcptr + i + 1) << (7 - mbits);
 
     *ptr++ = octet;
-    // sprintf(res, "%02X", octet);
-    // res += 2;
 
     mbits++;
     rlen++;
@@ -127,7 +120,6 @@ char *xstrndup(char *str, int size)
 
   strncpy(ret, str, size + 1);
   ret[size] = '\0';
-  // printf("Result: %s\n", ret);
 
   return ret;
 }
@@ -234,22 +226,10 @@ static int gsm_read(gsm_t *gsm, char *buf, int len)
 
           if (nb > 0)
             pos += nb;
-
-          // DEBUG
-          // for (int i = 0; i < pos; i++)
-          // {
-          //   printf("%d ", buf[i]);
-          // }
-          // printf("\n");
-          // printf("Buf: %s, Ret: %d\n", buf, nb);
-          // if (buf[pos - 2] == '\r' && buf[pos - 1] == '\n')
-          //   break;
         }
         while(nb > 0);
       }
     }
-
-  // printf("POS: %d\n", pos);
 
   if (buf[pos - 2] == '\r' && buf[pos - 1] == '\n')
     buf[pos - 2] = '\0';
@@ -326,18 +306,9 @@ char * gsm_cmd(gsm_t *gsm, const char *cmd)
   ncmd[len - 1] = '\0';
   tcflush(gsm->fd,TCIOFLUSH);
 
-  // for (int i = 0; i < strlen(ncmd) + 1; i++)
-  //   printf("%d ", ncmd[i]);
-  // printf("\n");
-
   write(gsm->fd, ncmd, len);
 
-  // printf("Actual Length: %d\n", strlen(cmd));
-  // // printf("Written Length: %d\n", wlen);
-  // printf("Written buffer: %s\n", ncmd);
-
   lenr = gsm_read(gsm, buf, sizeof(buf));
-  // printf("buf: %s, len: %d\n", buf, lenr);
 
   res = malloc(lenr + 1);
   strncpy(res, buf, lenr + 1);
@@ -347,9 +318,8 @@ char * gsm_cmd(gsm_t *gsm, const char *cmd)
 
 int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
 {
-  // printf("len: %d, septlen: %d\n", strlen(msg), septlen(strlen(msg)));
   char * gsm_pdu_mode_res;
-  int i, msg_read_len, tpdu_len, msg_body_len, msg_len, msg_pos, msg_read, msg_enc_hex_len;
+  int ret, i, msg_read_len, tpdu_len, msg_body_len, msg_len, msg_pos, msg_read, msg_enc_hex_len;
   uint8_t msg_id, num_msgs;
   static uint8_t msg_ref = 0;
   msg_len = strlen(msg);
@@ -370,93 +340,93 @@ int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
   char msgref[] = "00";
   char destlen[] = "0B"; // 11 characters long for dest #
   char desttype[] = "91"; // International format
-  char dest[13]; // 12 characters long for dest address and null byte
+  char dest[16]; // 12 characters long for dest address and null byte
   char protocol[] = "00";
   char dataencoding[] = "00"; // 7-bit encoding
   char udlh[] = "05";
   char udh[] = "0003a10302";
   char msgpart[MAX_SMS_BYTES*2];
   char pdustr[38 + MAX_SMS_BYTES*2];
-  char buf[1028];
+  char lenstr[4];
 
   // Make sure GSM is in PDU mode
-  gsm_pdu_mode_res = gsm_cmd(gsm, "AT+CMGF=0");
-  if (strcmp(gsm_pdu_mode_res, "OK") == 0)
+  // printf("GSM is in PDU Mode\n");
+  // Reference
+  snprintf(udh+4, 3, "%02X", msg_ref++);
+  // Total Messages
+  snprintf(udh+6, 3, "%02X", num_msgs);
+  // Current message
+  snprintf(udh+8, 3, "%02X", msg_id++);
+  // Copy number to destination
+  strcpy(dest, number);
+  // Append padding since destination length is at least 11 characters long
+  strcat(dest, "F");
+
+  // Convert the phone # into PDU format
+  for (i = 0; i < 11; i+=2)
   {
-    printf("GSM is in PDU Mode\n");
-    // Reference
-    snprintf(udh+4, 3, "%02X", msg_ref++);
+    // First and second character holders
+    char f,s;
 
-    // Total Messages
-    snprintf(udh+6, 3, "%02X", num_msgs);
+    // Store characters
+    f = dest[i];
+    s = dest[i+1];
 
-    // Current message
-    snprintf(udh+8, 3, "%02X", msg_id++);
+    // Swap
+    dest[i] = s;
+    dest[i+1] = f;
+  }
+  dest[12] = '\0';
 
-    // Copy number to destination
-    strcpy(dest, number);
+  if (msg_len > MAX_SMS_LEN)
+  {
+    // UDH header exists
+    tpdu_type[0] = '4';
 
-    // Append padding since destination length is at least 11 characters long
-    strcat(dest, "F");
-
-    // Convert the destination # into PDU format
-    for (i = 0; i < 11; i+=2)
+    // Break down the message into multiple SMS
+    while (msg_read != msg_len)
     {
-      // First and second character holders
-      char f,s;
-
-      // Store characters
-      f = dest[i];
-      s = dest[i+1];
-
-      // Swap
-      dest[i] = s;
-      dest[i+1] = f;
-    }
-    dest[12] = '\0';
-
-    if (msg_len > MAX_SMS_LEN)
-    {
-      // UDH header exists
-      tpdu_type[0] = '4';
-
-      // Break down the message into multiple SMS
-      while (msg_read != msg_len)
+      // SMS needs to be split into multipart messages
+      if (msg_len - msg_read > MAX_SMS_LEN)
       {
-        char lenstr[4];
-        // SMS needs to be split into multipart messages
-        if (msg_len - msg_read > MAX_SMS_LEN)
-        {
-          strncpy(msg_cpy, msg+msg_read, MAX_SMS_LEN - 8);
-          msg_cpy[MAX_SMS_LEN - 8] = '\0';
-          msg_read += MAX_SMS_LEN - 8;
-          msg_read_len = MAX_SMS_LEN;
-        }
-        else
-        {
-          // strcpy(msg_cpy, msg);
-          strcpy(msg_cpy, msg+msg_read);
-          msg_read_len = strlen(msg_cpy) + 7;
-          msg_read += msg_read_len - 7;
-        }
-
-        msg_body_len = pdu_pack(msg_encoded, msg_cpy, 1);
-        printf("Sizeof pdustr: %d\n", sizeof(pdustr));
-        tpdu_len = sprintf(pdustr, "%s%s%s%s%s%s%s%s%02X%s%s%s", smsc, tpdu_type, msgref, destlen, desttype, dest, protocol, dataencoding, msg_read_len, udlh, udh, str2hex(msgpart, msg_encoded));
-        sprintf(lenstr, "%d", (tpdu_len-2)/2);
-        snprintf(udh+8, 3, "%02X", msg_id++);
-        printf("Result: %d\n", gsm_sendmsg(gsm, lenstr, pdustr, 1));
+        strncpy(msg_cpy, msg+msg_read, MAX_SMS_LEN - 8);
+        msg_cpy[MAX_SMS_LEN - 8] = '\0';
+        msg_read += MAX_SMS_LEN - 8;
+        msg_read_len = MAX_SMS_LEN;
       }
-    }
-    else
-    {
-      char lenstr[4];
-      msg_body_len = pdu_pack(msg_encoded, msg, 0);
-      tpdu_len = sprintf(pdustr, "%s%s%s%s%s%s%s%s%02X%s", smsc, tpdu_type, msgref, destlen, desttype, dest, protocol, dataencoding, msg_len, msg_encoded);
-      sprintf(lenstr, "%d", (tpdu_len-2/2));
-      gsm_sendmsg(gsm, lenstr, pdustr, 1);
+      else
+      {
+        strcpy(msg_cpy, msg+msg_read);
+        msg_read_len = strlen(msg_cpy) + 7;
+        msg_read += msg_read_len - 7;
+      }
+
+      msg_body_len = pdu_pack(msg_encoded, msg_cpy, 1);
+      tpdu_len = sprintf(pdustr, "%s%s%s%s%s%s%s%s%02X%s%s%s", smsc, tpdu_type, msgref, destlen, desttype, dest, protocol, dataencoding, msg_read_len, udlh, udh, str2hex(msgpart, msg_encoded));
+      sprintf(lenstr, "%d", (tpdu_len-2)/2);
+      snprintf(udh+8, 3, "%02X", msg_id++);
+      ret = gsm_sendmsg(gsm, lenstr, pdustr, 1);
+
+      // Error
+      if (ret > 0)
+        return ret;
     }
   }
+  else
+  {
+    // UDH header not necessary
+    msg_body_len = pdu_pack(msg_encoded, msg, 0);
+    tpdu_len = sprintf(pdustr, "%s%s%s%s%s%s%s%s%02X%s", smsc, tpdu_type, msgref, destlen, desttype, dest, protocol, dataencoding, msg_len, msg_encoded);
+    sprintf(lenstr, "%d", (tpdu_len-2/2));
+    return gsm_sendmsg(gsm, lenstr, pdustr, 1);
+  }
+
+  return 0;
+}
+
+int gsm_sendmsgtext(gsm_t *gsm, char *number, char *msg)
+{
+  return gsm_sendmsg(gsm, number, msg, 0);
 }
 
 int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
@@ -465,49 +435,55 @@ int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
   const char beg[] = "AT+CMGS=";
   const char end[] = "\r\n";
   char nmsg[msglen + 2];
-  char from[sizeof(beg) + !pdu + strlen(number) + !pdu + sizeof(end)];
+  char from[sizeof(beg) + (!pdu % 2) + strlen(number) + (!pdu % 2) + sizeof(end)];
   char ret[256];
 
-  strcpy(from, beg);
+  // Create SMS mode command
+  char sms_mode_cmd[10];
+  sprintf(sms_mode_cmd, "AT+CMGF=%d", !pdu % 2);
 
-  // Beginning quotes for text mode
-  if (!pdu)
-    strcat(from, "\"");
-
-  strcat(from, number);
-
-  // End quotes for text mode
-  if (!pdu)
-    strcat(from, "\"");
-
-  strcat(from, end);
-  strcpy(nmsg, msg);
-  nmsg[msglen + 1] = '\x1A';
-  nmsg[msglen + 2] = '\0';
-
-  printf("Writing: %s %s\n", from, nmsg);
-
-  write(gsm->fd, from, sizeof(from));
-  sleep(5);
-  write(gsm->fd, nmsg, sizeof(nmsg));
-  sleep(10);
-  gsm_read(gsm, ret, sizeof(ret));
-
-  printf("Result: %s\n", ret);
-
-  // Get result
-  if (strcmp(ret, "> ") == 0)
+  if (CMD_OK(gsm, sms_mode_cmd))
   {
-    printf("> is found\n");
+    strcpy(from, beg);
+
+    // Beginning quotes for text mode
+    if (!pdu)
+      strcat(from, "\"");
+
+    strcat(from, number);
+
+    // End quotes for text mode
+    if (!pdu)
+      strcat(from, "\"");
+
+    strcat(from, end);
+    strcpy(nmsg, msg);
+    nmsg[msglen + 1] = '\x1A';
+    nmsg[msglen + 2] = '\0';
+
+    // printf("Writing: %s %s\n", from, nmsg);
+
+    write(gsm->fd, from, sizeof(from));
+    sleep(5);
+    write(gsm->fd, nmsg, sizeof(nmsg));
+    sleep(10);
     gsm_read(gsm, ret, sizeof(ret));
-  }
 
-  // Error
-  if (strcmp(ret, "OK") != 0)
+    // Get result
+    if (strcmp(ret, "> ") == 0)
+      gsm_read(gsm, ret, sizeof(ret));
+
+    // Error
+    if (strcmp(ret, "OK") != 0)
+    {
+      printf("SMS error: %s\n", ret);
+      if (strncmp(ret, "+CMS ERROR: ", 12) == 0)
+        return atoi(ret + 12);
+    }
+  }
+  else
   {
-    printf("SMS error: %s\n", ret);
-    if (strncmp(ret, "+CMS ERROR: ", 12) == 0)
-      return atoi(ret + 12);
+    return -1;
   }
 
   return 0;
@@ -524,8 +500,6 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int limit)
   gsmmsg_t * msgs = malloc(sizeof(*msgs)*limit);
   char *lineptr, *stats, *timestmpptr, *tok, *stattok, *timestmptok;
 
-  // Memset
-  // memset(msgs, 0, sizeof(gsmmsg_t) * limit);
   for (i = 0; i < limit; i++)
   {
     msgs[i].orig = NULL;
@@ -605,50 +579,39 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int limit)
               month = day /30;
               year = (70 + month/12)/100;
 
-              // printf("full: %d, min: %d, hour: %d, day: %d, month: %d, year: %d\n", fullsecs, min, hour, day, month, year);
-
               // Date
               timestmptok = xstrtok(tmpdate, ",", &timestmpptr);
 
               // Get year
               timestmptok = xstrtok(timestmptok, "/", &dateptr);
               year = 100*year + atoi(timestmptok);
-              // printf("Year: %d\n", year);
 
               // Get month
               timestmptok = xstrtok(NULL, "/", &dateptr);
               month = atoi(timestmptok);
-              // printf("Month: %d\n", month);
 
               // Get day
               timestmptok = xstrtok(NULL, "/", &dateptr);
               day = atoi(timestmptok);
-              // printf("Day: %d\n", day);
 
               // Get time
               timestmptok = xstrtok(NULL, ",", &timestmpptr);
 
-              // printf("Time: %s\n", timestmptok);
-
               // Get hour
               timestmptok = xstrtok(timestmptok, ":", &timeptr);
               hour = atoi(timestmptok);
-              // printf("Hour: %d\n", hour);
 
               timestmptok = xstrtok(NULL, ":", &timeptr);
               min = atoi(timestmptok);
-              // printf("Min: %d\n", min);
 
               timestmptok = xstrtok(NULL, ":", &timeptr);
               char timediff = timestmptok[2];
               timestmptok[2] = '\0';
               sec = atoi(timestmptok);
-              // printf("Sec: %d\n", sec);
 
               // calculate time difference
               timestmptok+= 3;
               gmtdiff = atoi(timestmptok) / 4;
-              // printf("Time difference: %c%d\n", timediff, gmtdiff);
 
               if (timediff == '-')
               {
@@ -688,8 +651,6 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int limit)
       }
       else
       {
-        // printf("line: %s\n", tok);
-        // printf("MSG Count: %d\n", msgcount);
         msgs[msgcount].msg = xstrdup(tok);
         msgcount++;
       }
