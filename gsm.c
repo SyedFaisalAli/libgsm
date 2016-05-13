@@ -1,9 +1,118 @@
-  #include "gsm.h"
+    #include "gsm.h"
+
+int septlen(int origsize)
+{
+  if (origsize / 7 == 1)
+    return origsize;
+  else
+    return origsize - (origsize / 7);
+}
 
 char *xstrdup(char *str)
 {
   int len = strlen(str);
   return xstrndup(str, len);
+}
+
+char * str2nhex(char *dest, char *src, int n)
+{
+  char *res, *ptr;
+  res = NULL;
+  ptr = NULL;
+
+  if (dest == NULL)
+  {
+    res = malloc(n+1);
+    ptr = res;
+  }
+  else
+  {
+    ptr = dest;
+    res = dest;
+  }
+
+  for (int i = 0; i < n; i++)
+  {
+    sprintf(ptr, "%02X", (uint8_t)src[i]);
+    // printf("Ptr: %s, Actual: %02X\n", ptr, (uint8_t)src[i]);
+    ptr += 2;
+  }
+
+  return res;
+}
+
+char * str2hex(char *dest, char *src)
+{
+  return str2nhex(dest, src, strlen(src));
+}
+
+int pdu_pack(char *dest, const char *src, int udhpadding)
+{
+  return pdu_npack(dest, src, udhpadding, strlen(src));
+}
+
+int pdu_npack(char *dest, const char *src, int udhpadding, int n)
+{
+  int i, mbits, rlen;
+  uint8_t octet;
+  char *ptr;
+  const char *srcptr;
+  // uint8_t cpy[paddedlen];
+  mbits = 0; // # Of bites to shift
+  rlen = 0; // # 7-bit length
+
+  ptr = dest;
+  srcptr = src;
+  // res = dest;
+
+  printf("Msg: %s\n", src);
+
+  // strcpy(cpy, src);
+
+  if (udhpadding > 0)
+  {
+    mbits = 7 - udhpadding;
+    printf("Inital %02X, moving: %d\n", src[0], mbits);
+    octet = *srcptr << (7 - mbits);
+    *ptr++ = octet;
+    // sprintf(res, "%02X", octet);
+    // res += 2;
+    mbits++;
+    rlen++;
+  }
+  // else
+  // {
+  //   strcpy(cpy, src);
+  // }
+
+  // printf("Len: %d, Str: %s\n", len, src);
+
+
+  // Iterate through each byte
+  for (i = 0; i < n; i++)
+  {
+    if (mbits == 7)
+    {
+      mbits = 0;
+      continue;
+    }
+
+    octet = (*(srcptr + i) & 0x7F) >> mbits;
+
+    if (i < n - 1)
+      octet |= *(srcptr + i + 1) << (7 - mbits);
+
+    *ptr++ = octet;
+    // sprintf(res, "%02X", octet);
+    // res += 2;
+
+    mbits++;
+    rlen++;
+  }
+
+  *ptr = '\0';
+
+  return rlen;
 }
 
 char *xstrndup(char *str, int size)
@@ -153,7 +262,7 @@ gsm_t * gsm_open(const char *devnode, int baudrate)
 {
   int fd;
   struct termios tio;
-  gsm_t *gsm;
+  gsm_t *gsm = NULL;
   fd = open(devnode, O_RDWR | O_NOCTTY | O_NDELAY);
 
   // Zero out term settings
@@ -198,7 +307,7 @@ gsm_t * gsm_open(const char *devnode, int baudrate)
   sleep(1);
   write(fd, "AT^CURC=0\r", 10);
   sleep(1);
-  write(fd, "AT+CMGF=1\r", 10);
+  write(fd, "AT+CMGF=0\r", 10);
   sleep(1);
   tcflush(fd,TCIOFLUSH);
 
@@ -236,30 +345,170 @@ char * gsm_cmd(gsm_t *gsm, const char *cmd)
   return res;
 }
 
-int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg)
+int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
+{
+  // printf("len: %d, septlen: %d\n", strlen(msg), septlen(strlen(msg)));
+  char * gsm_pdu_mode_res;
+  int i, msg_read_len, tpdu_len, msg_body_len, msg_len, msg_pos, msg_read, msg_enc_hex_len;
+  uint8_t msg_id, num_msgs;
+  static uint8_t msg_ref = 0;
+  msg_len = strlen(msg);
+  msg_enc_hex_len = septlen(msg_len)*2;
+  num_msgs = (msg_len / MAX_SMS_LEN) + 1;
+  msg_id = 1;
+
+  char msg_cpy[MAX_SMS_LEN];
+  char msg_encoded[MAX_SMS_BYTES];
+  char msg_encoded_hex[MAX_SMS_BYTES*2];
+
+  tpdu_len = 0;
+  msg_read = 0;
+
+  // We use the SMSC that the SIM card automatically sets
+  char smsc[] = "00";
+  char tpdu_type[] = "01";
+  char msgref[] = "00";
+  char destlen[] = "0B"; // 11 characters long for dest #
+  char desttype[] = "91"; // International format
+  char dest[13]; // 12 characters long for dest address and null byte
+  char protocol[] = "00";
+  char dataencoding[] = "00"; // 7-bit encoding
+  char udlh[] = "05";
+  char udh[] = "0003a10302";
+  char msgpart[MAX_SMS_BYTES*2];
+  char pdustr[38 + MAX_SMS_BYTES*2];
+  char buf[1028];
+
+  // Make sure GSM is in PDU mode
+  gsm_pdu_mode_res = gsm_cmd(gsm, "AT+CMGF=0");
+  if (strcmp(gsm_pdu_mode_res, "OK") == 0)
+  {
+    printf("GSM is in PDU Mode\n");
+    // Reference
+    snprintf(udh+4, 3, "%02X", msg_ref++);
+
+    // Total Messages
+    snprintf(udh+6, 3, "%02X", num_msgs);
+
+    // Current message
+    snprintf(udh+8, 3, "%02X", msg_id++);
+
+    // Copy number to destination
+    strcpy(dest, number);
+
+    // Append padding since destination length is at least 11 characters long
+    strcat(dest, "F");
+
+    // Convert the destination # into PDU format
+    for (i = 0; i < 11; i+=2)
+    {
+      // First and second character holders
+      char f,s;
+
+      // Store characters
+      f = dest[i];
+      s = dest[i+1];
+
+      // Swap
+      dest[i] = s;
+      dest[i+1] = f;
+    }
+    dest[12] = '\0';
+
+    if (msg_len > MAX_SMS_LEN)
+    {
+      // UDH header exists
+      tpdu_type[0] = '4';
+
+      // Break down the message into multiple SMS
+      while (msg_read != msg_len)
+      {
+        char lenstr[4];
+        // SMS needs to be split into multipart messages
+        if (msg_len - msg_read > MAX_SMS_LEN)
+        {
+          strncpy(msg_cpy, msg+msg_read, MAX_SMS_LEN - 8);
+          msg_cpy[MAX_SMS_LEN - 8] = '\0';
+          msg_read += MAX_SMS_LEN - 8;
+          msg_read_len = MAX_SMS_LEN;
+        }
+        else
+        {
+          // strcpy(msg_cpy, msg);
+          strcpy(msg_cpy, msg+msg_read);
+          msg_read_len = strlen(msg_cpy) + 7;
+          msg_read += msg_read_len - 7;
+        }
+
+        msg_body_len = pdu_pack(msg_encoded, msg_cpy, 1);
+        printf("Sizeof pdustr: %d\n", sizeof(pdustr));
+        tpdu_len = sprintf(pdustr, "%s%s%s%s%s%s%s%s%02X%s%s%s", smsc, tpdu_type, msgref, destlen, desttype, dest, protocol, dataencoding, msg_read_len, udlh, udh, str2hex(msgpart, msg_encoded));
+        sprintf(lenstr, "%d", (tpdu_len-2)/2);
+        snprintf(udh+8, 3, "%02X", msg_id++);
+        printf("Result: %d\n", gsm_sendmsg(gsm, lenstr, pdustr, 1));
+      }
+    }
+    else
+    {
+      char lenstr[4];
+      msg_body_len = pdu_pack(msg_encoded, msg, 0);
+      tpdu_len = sprintf(pdustr, "%s%s%s%s%s%s%s%s%02X%s", smsc, tpdu_type, msgref, destlen, desttype, dest, protocol, dataencoding, msg_len, msg_encoded);
+      sprintf(lenstr, "%d", (tpdu_len-2/2));
+      gsm_sendmsg(gsm, lenstr, pdustr, 1);
+    }
+  }
+}
+
+int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
 {
   int msglen = strlen(msg);
-  const char beg[] = "AT+CMGS=\"";
-  const char end[] = "\"\r\n";
+  const char beg[] = "AT+CMGS=";
+  const char end[] = "\r\n";
   char nmsg[msglen + 2];
-  char from[sizeof(beg) + strlen(number) + sizeof(end)];
+  char from[sizeof(beg) + !pdu + strlen(number) + !pdu + sizeof(end)];
   char ret[256];
+
   strcpy(from, beg);
+
+  // Beginning quotes for text mode
+  if (!pdu)
+    strcat(from, "\"");
+
   strcat(from, number);
+
+  // End quotes for text mode
+  if (!pdu)
+    strcat(from, "\"");
+
   strcat(from, end);
   strcpy(nmsg, msg);
   nmsg[msglen + 1] = '\x1A';
   nmsg[msglen + 2] = '\0';
 
+  printf("Writing: %s %s\n", from, nmsg);
+
   write(gsm->fd, from, sizeof(from));
-  sleep(1);
+  sleep(5);
   write(gsm->fd, nmsg, sizeof(nmsg));
   sleep(10);
   gsm_read(gsm, ret, sizeof(ret));
 
+  printf("Result: %s\n", ret);
+
   // Get result
   if (strcmp(ret, "> ") == 0)
+  {
+    printf("> is found\n");
     gsm_read(gsm, ret, sizeof(ret));
+  }
+
+  // Error
+  if (strcmp(ret, "OK") != 0)
+  {
+    printf("SMS error: %s\n", ret);
+    if (strncmp(ret, "+CMS ERROR: ", 12) == 0)
+      return atoi(ret + 12);
+  }
 
   return 0;
 }
@@ -428,7 +677,7 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int limit)
               msgs[msgcount].datetime.tm_year = year;
               msgs[msgcount].datetime.tm_isdst = -1;
 
-              printf("DateTime: %s\n", asctime(&msgs[msgcount].datetime));
+              // printf("DateTime: %s\n", asctime(&msgs[msgcount].datetime));
 
               free(tmpdate);
             }
@@ -484,7 +733,7 @@ void gsm_freemsgs(gsmmsg_t * msgs, int n)
   free(msgs);
 }
 
-void    gsm_freemsg(gsmmsg_t *msg)
+void gsm_freemsg(gsmmsg_t *msg)
 {
   gsm_freemsgs(msg, 1);
 }

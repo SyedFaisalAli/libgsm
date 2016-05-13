@@ -1,3 +1,4 @@
 libgsm.a
 gsm
 *.o
+vgcore.*

@@ -12,7 +12,7 @@ $(OUT): $(OBJECTS)
 	$(AR) rcs $@ $^
 
 %.o: %.c
-	$(CC) $(CFLAGS) --std=c99 -c $<
+	$(CC) $(CFLAGS) -c $<
 
 
 test: $(OBJECTS)
