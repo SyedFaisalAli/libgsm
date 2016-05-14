@@ -349,8 +349,6 @@ int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
   char pdustr[38 + MAX_SMS_BYTES*2];
   char lenstr[4];
 
-  // Make sure GSM is in PDU mode
-  // printf("GSM is in PDU Mode\n");
   // Reference
   snprintf(udh+4, 3, "%02X", msg_ref++);
   // Total Messages
