@@ -74,6 +74,8 @@ static int gsm_read(gsm_t *, char *, int);
 
 gsm_t * gsm_open(const char *, int);
 char *  gsm_cmd(gsm_t *, const char *);
+int     gsm_rssi(gsm_t *);
+int     att_bars(gsm_t *);
 static int gsm_sendmsg(gsm_t *, const char *, const char *, int);
 int     gsm_sendmsgpdu(gsm_t *, char *, char *);
 int     gsm_sendmsgtext(gsm_t *, char *, char *);
