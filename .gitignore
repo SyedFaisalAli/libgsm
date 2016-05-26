@@ -1,4 +1,4 @@
-libgsm.a
+libgsms.a
 gsm
 *.o
 vgcore.*

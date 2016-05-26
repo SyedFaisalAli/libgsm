@@ -102,7 +102,7 @@ int pdu_npack(char *dest, const char *src, int udhpadding, int n)
     rlen++;
   }
 
-  *ptr = '\0';
+  // *(ptr-1) = '\0';
 
   return rlen;
 }
@@ -190,6 +190,28 @@ char *xstrtok(char *str, const char *delim, char **ptr)
   return ret;
 }
 
+int gsm_numresults(char *buf, const char *cmdsuff)
+{
+  int numres, cmdsufflen;
+  numres = 0;
+  cmdsufflen = strlen(cmdsuff);
+  char *ptr, *dup, *tok;
+  dup = strdup(buf);
+
+  tok = xstrtok(dup, "\r\n", &ptr);
+  while (tok != NULL)
+  {
+    if (tok[0] == '+' && strncmp(tok+1, cmdsuff, cmdsufflen) == 0)
+      numres++;
+
+    tok = xstrtok(NULL, "\r\n", &ptr);
+  }
+
+  free(dup);
+
+  return numres;
+}
+
 int gsm_rssi(gsm_t *gsm)
 {
   char *csq_res = gsm_cmd(gsm, "AT+CSQ");
@@ -227,11 +249,36 @@ int att_bars(gsm_t *gsm)
     return 5;
 }
 
-static int gsm_read(gsm_t *gsm, char *buf, int len)
+int gsm_readall(gsm_t *gsm, char **buf)
+{
+  int initialSize, currSize, read;
+  initialSize = 1024;
+  currSize = 0;
+  read = 0;
+
+  if (*buf == NULL)
+    *buf = malloc(initialSize);
+
+  while ((read = gsm_read(gsm, *buf + currSize, initialSize - currSize)) > 0)
+  {
+    currSize += read;
+
+    if (currSize >= initialSize - 1)
+    {
+      initialSize *= 2;
+      *buf = realloc(*buf, initialSize);
+    }
+  }
+
+  return currSize;
+}
+
+int gsm_read(gsm_t *gsm, char *buf, int len)
 {
   int nb, pos, resp, pollret;
   char ign[2];
   struct pollfd fds[1];
+  int initalnewlines = 0;
   nb = 0;
   pos = 0;
   resp = 0;
@@ -240,37 +287,35 @@ static int gsm_read(gsm_t *gsm, char *buf, int len)
   fds[0].fd = gsm->fd;
   fds[0].events = POLLIN;
 
-    pollret = poll(fds, 1, -1);
-    if (pollret > 0)
+  do
+  {
+    pollret = poll(fds, 1, READ_TIMEOUT);
+
+    if (fds[0].revents & POLLIN)
     {
-      if (fds[0].revents & POLLIN)
+      nb = read(gsm->fd, buf + pos, 1);
+
+      if ((*(buf + pos) == '\r' || *(buf + pos) == '\n') && !initalnewlines)
+        continue;
+      else
+        initalnewlines = 1;
+
+      if (nb > 0)
       {
-        do
-        {
-          nb = read(gsm->fd, buf + pos, len - pos);
+        // printf("Char code: %d\n", buf[pos]);
+        pos += nb;
+      }
 
-          if ((buf[0] == '\n' || buf[0] == '\r') && resp != 4)
-          {
-            resp++;
-            continue;
-          }
-          else
-          {
-            resp = 4;
-          }
-
-          if (nb > 0)
-            pos += nb;
-        }
-        while(nb > 0);
+      if (*(buf + pos - 4) == 'O' && *(buf + pos - 3) == 'K' && *(buf + pos - 2) == 13 && *(buf + pos - 1) == 10)
+      {
+        *(buf + pos - 2) = 0;
+        break;
       }
     }
+  }
+  while(pos < len && pollret > 0);
 
-  if (buf[pos - 2] == '\r' && buf[pos - 1] == '\n')
-    buf[pos - 2] = '\0';
-
-  // Length
-  return pos - 1;
+  return pos;
 }
 
 gsm_t * gsm_open(const char *devnode, int baudrate)
@@ -329,12 +374,23 @@ gsm_t * gsm_open(const char *devnode, int baudrate)
   return gsm;
 }
 
+int gsm_deletemsg(gsm_t *gsm, gsmmsg_t *msg)
+{
+  char cmgdcmd[32];
+  sprintf(cmgdcmd, "AT+CMGD=%d", msg->index);
+
+  if (CMD_OK(gsm, cmgdcmd))
+    return 1;
+
+  return 0;
+}
+
 char * gsm_cmd(gsm_t *gsm, const char *cmd)
 {
   int len, lenr;
   len = strlen(cmd) + 2;
-  char ncmd[len], buf[256];
-  char * res = NULL;
+  char ncmd[len];
+  char buf[512];
 
   strcpy(ncmd, cmd);
   ncmd[len - 2] = '\r';
@@ -344,14 +400,12 @@ char * gsm_cmd(gsm_t *gsm, const char *cmd)
   write(gsm->fd, ncmd, len);
 
   lenr = gsm_read(gsm, buf, sizeof(buf));
+  // printf("Buf2: %s\n", buf);
 
-  res = malloc(lenr + 1);
-  strncpy(res, buf, lenr + 1);
-
-  return res;
+  return strdup(buf);
 }
 
-int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
+int gsm_sendmsgpdu(gsm_t *gsm, const char *number, char *msg)
 {
   char * gsm_pdu_mode_res;
   int ret, i, dest_len, msg_read_len, tpdu_len, msg_body_len, msg_len, msg_pos, msg_read, msg_enc_hex_len;
@@ -429,9 +483,9 @@ int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
       // SMS needs to be split into multipart messages
       if (msg_len - msg_read > MAX_SMS_LEN)
       {
-        strncpy(msg_cpy, msg+msg_read, MAX_SMS_LEN - 8);
-        msg_cpy[MAX_SMS_LEN - 8] = '\0';
-        msg_read += MAX_SMS_LEN - 8;
+        strncpy(msg_cpy, msg+msg_read, MAX_SMS_LEN - 7);
+        msg_cpy[MAX_SMS_LEN - 7] = '\0';
+        msg_read += MAX_SMS_LEN - 7;
         msg_read_len = MAX_SMS_LEN;
       }
       else
@@ -446,6 +500,7 @@ int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
       tpdu_len = (tpdu_len-2)/2;
       sprintf(lenstr, "%d", tpdu_len);
       snprintf(udh+8, 3, "%02X", msg_id++);
+      printf("Sending PDU Str: %s, Len: %d\n", pdustr, tpdu_len);
       ret = gsm_sendmsg(gsm, lenstr, pdustr, 1);
 
       // Error
@@ -466,7 +521,7 @@ int gsm_sendmsgpdu(gsm_t *gsm, char *number, char *msg)
   return 0;
 }
 
-int gsm_sendmsgtext(gsm_t *gsm, char *number, char *msg)
+int gsm_sendmsgtext(gsm_t *gsm, const char *number, char *msg)
 {
   return gsm_sendmsg(gsm, number, msg, 0);
 }
@@ -480,6 +535,8 @@ int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
   char nmsg[msglen + 2];
   char from[sizeof(beg) + (!pdu % 2) + strlen(number) + (!pdu % 2) + sizeof(end)];
   char ret[256];
+  char *buf, *bufptr;
+  // buf = NULL;
 
   // Create SMS mode command
   char sms_mode_cmd[10];
@@ -508,21 +565,25 @@ int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
     write(gsm->fd, nmsg, sizeof(nmsg));
     sleep(1);
     retlen = gsm_read(gsm, ret, sizeof(ret));
+    // retlen = gsm_readall(gsm, &buf);
+    // bufptr = buf;
+    // printf("Buf: %s, Len: %d\n", ret, retlen);
 
     // Get result
-    if (ret[0] == '>' && (retlen-1) == 2)
+    if (ret[0] == '>' && retlen <= 4)
     {
       sleep(5);
-      gsm_read(gsm, ret, sizeof(ret));
-      retlen = strlen(ret);
+      retlen = gsm_read(gsm, ret, sizeof(ret));
     }
+
+    printf("Buf: %s, Len: %d\n", ret, retlen);
 
     // Error
     if (ret[retlen - 2] != 'O' && ret[retlen - 1] != 'K')
     {
       char * cmserr = strchr(ret, '+');
       if (strncmp(cmserr, "+CMS ERROR: ", 12) == 0)
-        return atoi(ret + 12);
+        return atoi(bufptr + 12);
     }
   }
   else
@@ -533,177 +594,213 @@ int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
   return 0;
 }
 
-gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int limit)
+gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int *nummsgs)
 {
-  int statcount, i, msgcount;
+  int statcount, i, j, msgcount;
   i = 0;
+  j = 0;
   msgcount = 0;
   char * buf;
   const char *cmdstart = "AT+CMGL=\"";
   const char *gsm_type;
-  gsmmsg_t * msgs = malloc(sizeof(*msgs)*limit);
+  gsmmsg_t * msgs = NULL;
   char *lineptr, *stats, *timestmpptr, *tok, *stattok, *timestmptok;
 
-  for (i = 0; i < limit; i++)
+  // Text mode only
+  if (CMD_OK(gsm, "AT+CMGF=1"))
   {
-    msgs[i].orig = NULL;
-    msgs[i].origname = NULL;
-    msgs[i].msg = NULL;
-  }
-
-  switch (type)
-  {
-    case UNREAD:
-    gsm_type = "REC UNREAD";
-    break;
-    case READ:
-    gsm_type = "REC READ";
-    break;
-    case UNSENT:
-    gsm_type = "STO UNSENT";
-    break;
-    default:
-    case ALL:
-    gsm_type = "ALL";
-    break;
-  }
-
-  char cmd[strlen(cmdstart) + strlen(gsm_type) + 2];
-  strcpy(cmd, cmdstart);
-  strcat(cmd, gsm_type);
-  strcat(cmd, "\"");
-
-  buf = gsm_cmd(gsm, cmd);
-
-  // First line
-  tok = xstrtok(buf, "\r\n", &lineptr);
-
-  // Until we reached end of tokens or OK
-  while (tok != NULL && tok[0] != 'O' && tok[1] != 'K')
-  {
-    if (msgcount < limit)
-    {
-      if (strncmp(tok, "+CMGL: ", 7) == 0)
+      switch (type)
       {
-        statcount = 0;
-        stattok = xstrtok(tok + 7, ",", &stats);
-        while (stattok != NULL)
+        case UNREAD:
+        gsm_type = "REC UNREAD";
+        break;
+        case READ:
+        gsm_type = "REC READ";
+        break;
+        case UNSENT:
+        gsm_type = "STO UNSENT";
+        break;
+        default:
+        case ALL:
+        gsm_type = "ALL";
+        break;
+      }
+
+      char cmd[strlen(cmdstart) + strlen(gsm_type) + 2];
+      strcpy(cmd, cmdstart);
+      strcat(cmd, gsm_type);
+      strcat(cmd, "\"");
+
+      buf = gsm_cmd(gsm, cmd);
+
+      // printf("Buffer: %s\n", buf) ;
+
+      // Get number of results from buffer
+      msgcount = gsm_numresults(buf, "CMGL");
+      // printf("Msg count: %d\n", msgcount);
+
+      // NO messages;
+      if (msgcount == 0)
+      {
+        free(buf);
+        return NULL;
+      }
+
+      msgs = malloc(sizeof(gsmmsg_t)*msgcount);
+
+      for (i = 0; i < msgcount; i++)
+      {
+        msgs[i].orig = NULL;
+        msgs[i].origname = NULL;
+        msgs[i].msg = NULL;
+      }
+
+      // printf("Buffer: %s\n", buf) ;
+
+      // First line
+      tok = xstrtok(buf, "\r\n", &lineptr);
+
+      // Until we reached end of tokens or OK
+      while (tok != NULL && tok[0] != 'O' && tok[1] != 'K')
+      {
+        if (strncmp(tok, "+CMGL: ", 7) == 0)
         {
-          int statlen = strlen(stattok);
-          if (stattok[0] != '\0')
+          statcount = 0;
+          stattok = xstrtok(tok + 7, ",", &stats);
+          while (stattok != NULL)
           {
-            if (statcount == MSG_INDEX)
-              msgs[msgcount].index = atoi(stattok);
-
-            if (statcount == MSG_STAT && (strcmp(stattok, gsm_type) == 0 || type == ALL))
-              msgs[msgcount].state = type;
-
-            if (statcount == MSG_ORIGADDR)
-              msgs[msgcount].orig = xstrndup(stattok+1,statlen-2);
-
-            if (statcount == MSG_ORIGNAME)
-              msgs[msgcount].origname = xstrndup(stattok+1, statlen-2);
-
-            if (statcount == MSG_TIMESTMP)
+            // printf("Tok: %s\n", stattok);
+            int statlen = strlen(stattok);
+            if (stattok[0] != '\0')
             {
-              int fullsecs, year, month, day, hour, min, sec, gmtdiff;
-              char *dateptr, *timeptr;
-              // TODO Parse timestamp
-              char *tmpdate = xstrndup(stattok+1, statlen-2);
+              if (statcount == MSG_INDEX)
+                msgs[j].index = atoi(stattok);
 
-              // Calculate the number of years since 1900 according to current date
-              fullsecs = time(NULL);
-              min = fullsecs/60;
-              hour = min/60;
-              day = hour/24;
-              month = day /30;
-              year = (70 + month/12)/100;
+              if (statcount == MSG_STAT && (strcmp(stattok, gsm_type) == 0 || type == ALL))
+                msgs[j].state = type;
 
-              // Date
-              timestmptok = xstrtok(tmpdate, ",", &timestmpptr);
-
-              // Get year
-              timestmptok = xstrtok(timestmptok, "/", &dateptr);
-              year = 100*year + atoi(timestmptok);
-
-              // Get month
-              timestmptok = xstrtok(NULL, "/", &dateptr);
-              month = atoi(timestmptok);
-
-              // Get day
-              timestmptok = xstrtok(NULL, "/", &dateptr);
-              day = atoi(timestmptok);
-
-              // Get time
-              timestmptok = xstrtok(NULL, ",", &timestmpptr);
-
-              // Get hour
-              timestmptok = xstrtok(timestmptok, ":", &timeptr);
-              hour = atoi(timestmptok);
-
-              timestmptok = xstrtok(NULL, ":", &timeptr);
-              min = atoi(timestmptok);
-
-              timestmptok = xstrtok(NULL, ":", &timeptr);
-              char timediff = timestmptok[2];
-              timestmptok[2] = '\0';
-              sec = atoi(timestmptok);
-
-              // calculate time difference
-              timestmptok+= 3;
-              gmtdiff = atoi(timestmptok) / 4;
-
-              if (timediff == '-')
+              if (statcount == MSG_ORIGADDR)
               {
-                hour += gmtdiff;
-                if (hour >= 24)
-                {
-                  hour = hour - 24;
-                  day += 1;
-                }
-              }
-              else if (timediff == '+')
-              {
-                hour -= gmtdiff;
-                if (hour < 0)
-                {
-                  hour = 24 + hour;
-                  day -= 1;
-                }
+                if (stattok[1] == '+')
+                  msgs[j].orig = xstrndup(stattok+2,statlen-3);
+                else
+                  msgs[j].orig = xstrndup(stattok+1,statlen-2);
+
+                // printf("Orig: %s\n", msgs[j].orig);
               }
 
-              msgs[msgcount].datetime.tm_sec = sec;
-              msgs[msgcount].datetime.tm_min = min;
-              msgs[msgcount].datetime.tm_hour = hour;
-              msgs[msgcount].datetime.tm_mday = day;
-              msgs[msgcount].datetime.tm_mon = month;
-              msgs[msgcount].datetime.tm_year = year;
-              msgs[msgcount].datetime.tm_isdst = -1;
+              if (statcount == MSG_ORIGNAME)
+                msgs[j].origname = xstrndup(stattok+1, statlen-2);
 
-              free(tmpdate);
+              if (statcount == MSG_TIMESTMP)
+              {
+                int fullsecs, year, month, day, hour, min, sec, gmtdiff;
+                char *dateptr, *timeptr;
+                // TODO Parse timestamp
+                char *tmpdate = xstrndup(stattok+1, statlen-2);
+
+                // Calculate the number of years since 1900 according to current date
+                fullsecs = time(NULL);
+                min = fullsecs/60;
+                hour = min/60;
+                day = hour/24;
+                month = day /30;
+                year = (70 + month/12)/100;
+
+                // Date
+                timestmptok = xstrtok(tmpdate, ",", &timestmpptr);
+
+                // Get year
+                timestmptok = xstrtok(timestmptok, "/", &dateptr);
+                year = 100*year + atoi(timestmptok);
+
+                // Get month
+                timestmptok = xstrtok(NULL, "/", &dateptr);
+                month = atoi(timestmptok);
+
+                // Get day
+                timestmptok = xstrtok(NULL, "/", &dateptr);
+                day = atoi(timestmptok);
+
+                // Get time
+                timestmptok = xstrtok(NULL, ",", &timestmpptr);
+
+                // Get hour
+                timestmptok = xstrtok(timestmptok, ":", &timeptr);
+                hour = atoi(timestmptok);
+
+                timestmptok = xstrtok(NULL, ":", &timeptr);
+                min = atoi(timestmptok);
+
+                timestmptok = xstrtok(NULL, ":", &timeptr);
+                char timediff = timestmptok[2];
+                timestmptok[2] = '\0';
+                sec = atoi(timestmptok);
+
+                // calculate time difference
+                timestmptok+= 3;
+                gmtdiff = atoi(timestmptok) / 4;
+
+                if (timediff == '-')
+                {
+                  hour += gmtdiff;
+                  if (hour >= 24)
+                  {
+                    hour = hour - 24;
+                    day += 1;
+                  }
+                }
+                else if (timediff == '+')
+                {
+                  hour -= gmtdiff;
+                  if (hour < 0)
+                  {
+                    hour = 24 + hour;
+                    day -= 1;
+                  }
+                }
+
+                msgs[j].datetime.tm_sec = sec;
+                msgs[j].datetime.tm_min = min;
+                msgs[j].datetime.tm_hour = hour;
+                msgs[j].datetime.tm_mday = day;
+                msgs[j].datetime.tm_mon = month;
+                msgs[j].datetime.tm_year = year;
+                msgs[j].datetime.tm_isdst = -1;
+
+                free(tmpdate);
+              }
             }
+            statcount++;
+            stattok = xstrtok(NULL, ",", &stats);
           }
-          statcount++;
-          stattok = xstrtok(NULL, ",", &stats);
         }
-      }
-      else
-      {
-        msgs[msgcount].msg = xstrdup(tok);
-        msgcount++;
-      }
+        else
+        {
+            // printf("Tok: %s\n", tok);
+            if (tok[0] != '\0')
+            {
+              msgs[j].msg = xstrdup(tok);
+              j++;
+            }
+        }
+
+      // Next line
+      tok = xstrtok(NULL, "\r\n", &lineptr);
     }
 
-    // Next line
-    tok = xstrtok(NULL, "\r\n", &lineptr);
+    free(buf);
   }
 
-  free(buf);
-
   if (msgcount > 0)
-    return msgs;
+  {
+    if (nummsgs != NULL)
+      *nummsgs = msgcount;
 
-  gsm_freemsgs(msgs, limit);
+    return msgs;
+  }
+
+  gsm_freemsgs(msgs, msgcount);
 
   return NULL;
 }
@@ -711,9 +808,9 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int limit)
 gsmmsg_t * gsm_readlastunread(gsm_t *gsm)
 {
   gsmmsg_t *msg = NULL;
-  msg = gsm_readmsg(gsm, UNREAD, 1);
+  msg = gsm_readmsg(gsm, UNREAD, NULL);
 
-  return msg;
+  return &msg[0];
 }
 
 void gsm_freemsgs(gsmmsg_t * msgs, int n)

@@ -4,7 +4,7 @@ AR=$(CROSS_COMPILE)ar
 SOURCES=gsm.c
 OBJECTS=$(SOURCES:.c=.o)
 CFLAGS=-g
-OUT=libgsm.a
+OUT=libgsms.a
 
 all: $(OUT) test
 
@@ -16,7 +16,7 @@ $(OUT): $(OBJECTS)
 
 
 test: $(OBJECTS)
-	$(CC) -g -o gsm gsmtest.c -L. -lgsm
+	$(CC) -g -o gsm gsmtest.c -L. -lgsms
 
 clean:
 	rm *.o

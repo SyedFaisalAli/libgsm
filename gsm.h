@@ -15,6 +15,8 @@
 #include <errno.h>
 #include <stdint.h>
 
+#define READ_TIMEOUT 2000
+
 // MACROS
 #define CMD_OK(gsm, cmd) xstrcmp(gsm_cmd(gsm, cmd), "OK", 1) == 0
 
@@ -70,17 +72,20 @@ char * str2hex(char *, char *);
 void printbytes(char *, int);
 
 /* Read into buffer until CR and returns characters read */
-static int gsm_read(gsm_t *, char *, int);
+int     gsm_read(gsm_t *, char *, int);
+int     gsm_readall(gsm_t *, char **);
+int     gsm_numresults(char *, const char *);
 
 gsm_t * gsm_open(const char *, int);
 char *  gsm_cmd(gsm_t *, const char *);
 int     gsm_rssi(gsm_t *);
 int     att_bars(gsm_t *);
 static int gsm_sendmsg(gsm_t *, const char *, const char *, int);
-int     gsm_sendmsgpdu(gsm_t *, char *, char *);
-int     gsm_sendmsgtext(gsm_t *, char *, char *);
-gsmmsg_t * gsm_readmsg(gsm_t *, int, int);
+int     gsm_sendmsgpdu(gsm_t *, const char *, char *);
+int     gsm_sendmsgtext(gsm_t *, const char *, char *);
+gsmmsg_t * gsm_readmsg(gsm_t *, int, int *);
 gsmmsg_t * gsm_readlastunread(gsm_t *);
+int     gsm_deletemsg(gsm_t *, gsmmsg_t *);
 void    gsm_freemsgs(gsmmsg_t *, int);
 void    gsm_freemsg(gsmmsg_t *);
 void    gsm_close(gsm_t *);
