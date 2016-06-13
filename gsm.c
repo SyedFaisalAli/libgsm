@@ -263,10 +263,14 @@ int gsm_readall(gsm_t *gsm, char **buf)
   {
     currSize += read;
 
+    // printf("Buffer: %s\n", *buf + currSize);
+
     if (currSize >= initialSize - 1)
     {
+      // printf("Reallocating...\n");
       initialSize *= 2;
       *buf = realloc(*buf, initialSize);
+      // printf("Finished reallocating...\n");
     }
   }
 
@@ -282,7 +286,10 @@ int gsm_read(gsm_t *gsm, char *buf, int len)
   nb = 0;
   pos = 0;
   resp = 0;
-  bzero(buf, len);
+
+  // printf("Buffer Len: %d\n", len);
+  // bzero(buf, len);
+  // memset(buf, 0, len);
 
   fds[0].fd = gsm->fd;
   fds[0].events = POLLIN;
@@ -326,7 +333,8 @@ gsm_t * gsm_open(const char *devnode, int baudrate)
   fd = open(devnode, O_RDWR | O_NOCTTY | O_NDELAY);
 
   // Zero out term settings
-  bzero(&tio, sizeof(struct termios));
+  // bzero(&tio, sizeof(struct termios));
+  memset(&tio, 0, sizeof(struct termios));
 
   if (fd < 0) return NULL;
 
@@ -571,19 +579,26 @@ int gsm_sendmsg(gsm_t *gsm, const char *number, const char *msg, int pdu)
 
     // Get result
     if (ret[0] == '>' && retlen <= 4)
-    {
-      sleep(5);
+      {
+      sleep(15);
       retlen = gsm_read(gsm, ret, sizeof(ret));
     }
 
-    printf("Buf: %s, Len: %d\n", ret, retlen);
+    // printf("Buf: %s, Len: %d\n", ret, retlen);
 
     // Error
     if (ret[retlen - 2] != 'O' && ret[retlen - 1] != 'K')
     {
       char * cmserr = strchr(ret, '+');
-      if (strncmp(cmserr, "+CMS ERROR: ", 12) == 0)
-        return atoi(bufptr + 12);
+      if (cmserr != NULL)
+      {
+        if (strncmp(cmserr, "+CMS ERROR: ", 12) == 0)
+          return atoi(bufptr + 12);
+      }
+      else
+      {
+        return -1;
+      }
     }
   }
   else
@@ -600,9 +615,9 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int *nummsgs)
   i = 0;
   j = 0;
   msgcount = 0;
-  char * buf;
-  const char *cmdstart = "AT+CMGL=\"";
-  const char *gsm_type;
+  char * buf = NULL;
+  const char cmdstart[] = "AT+CMGL=\"";
+  char gsm_type[11];
   gsmmsg_t * msgs = NULL;
   char *lineptr, *stats, *timestmpptr, *tok, *stattok, *timestmptok;
 
@@ -612,27 +627,36 @@ gsmmsg_t * gsm_readmsg(gsm_t *gsm, int type, int *nummsgs)
       switch (type)
       {
         case UNREAD:
-        gsm_type = "REC UNREAD";
+        // gsm_type = "REC UNREAD";
+        strcpy(gsm_type, "REC UNREAD");
         break;
         case READ:
-        gsm_type = "REC READ";
+        // gsm_type = "REC READ";
+        strcpy(gsm_type, "REC READ");
         break;
         case UNSENT:
-        gsm_type = "STO UNSENT";
+        // gsm_type = "STO UNSENT";
+        strcpy(gsm_type, "STO UNSENT");
         break;
         default:
         case ALL:
-        gsm_type = "ALL";
+        // gsm_type = "ALL";
+        strcpy(gsm_type, "ALL");
         break;
       }
 
-      char cmd[strlen(cmdstart) + strlen(gsm_type) + 2];
+      char cmd[strlen(cmdstart) + strlen(gsm_type) + 3];
       strcpy(cmd, cmdstart);
       strcat(cmd, gsm_type);
-      strcat(cmd, "\"");
+      strcat(cmd, "\"\r");
+      printf("CMD: %s, Len: %d\n", cmd, strlen(cmd));
+      write(gsm->fd, cmd, strlen(cmd)+1);
 
-      buf = gsm_cmd(gsm, cmd);
+      // printf("Finished writing %s\n", cmd);
 
+      // buf = gsm_cmd(gsm, cmd);
+      sleep(1);
+      gsm_readall(gsm, &buf);
       // printf("Buffer: %s\n", buf) ;
 
       // Get number of results from buffer
