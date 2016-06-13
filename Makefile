@@ -19,6 +19,6 @@ test: $(OBJECTS)
 	$(CC) $(CFLAGS) -o gsm gsmtest.c -L. -lgsms
 
 clean:
-	rm *.o
+	rm *.o libgsms.a
 
 .PHONY: clean test
